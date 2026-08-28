@@ -8,14 +8,18 @@ const db = new Database(path.join(__dirname, "..", "datadock.db"));
 db.pragma("journal_mode = WAL");
 
 db.exec(`
+
 CREATE TABLE IF NOT EXISTS users (
   id TEXT PRIMARY KEY,
+  full_name TEXT NOT NULL,
+  username TEXT UNIQUE NOT NULL,
   email TEXT UNIQUE NOT NULL,
+  phone TEXT NOT NULL,
   password_hash TEXT NOT NULL,
+  referred_by TEXT,
   wallet_balance INTEGER NOT NULL DEFAULT 0, -- kobo (NGN * 100), avoids float errors
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
-
 -- Every change to a wallet balance is a row here. Balance on the user table
 -- is a cache; this table is the source of truth / audit trail.
 CREATE TABLE IF NOT EXISTS wallet_ledger (

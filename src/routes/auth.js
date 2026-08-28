@@ -7,22 +7,40 @@ const db = require("../db");
 const router = express.Router();
 
 router.post("/register", async (req, res) => {
-  const { email, password } = req.body;
-  if (!email || !password || password.length < 8) {
-    return res.status(400).json({ error: "Email and password (min 8 chars) required" });
+  const { fullName, username, email, phone, password, referralUsername } = req.body;
+
+  if (!fullName || !username || !email || !phone || !password) {
+    return res.status(400).json({ error: "Full name, username, email, phone, and password are required" });
+  }
+  if (password.length < 8) {
+    return res.status(400).json({ error: "Password must be at least 8 characters" });
   }
 
-  const existing = db.prepare("SELECT id FROM users WHERE email = ?").get(email);
-  if (existing) return res.status(409).json({ error: "Email already registered" });
+  const existingEmail = db.prepare("SELECT id FROM users WHERE email = ?").get(email);
+  if (existingEmail) return res.status(409).json({ error: "Email already registered" });
+
+  const existingUsername = db.prepare("SELECT id FROM users WHERE username = ?").get(username);
+  if (existingUsername) return res.status(409).json({ error: "Username already taken" });
+
+  // If a referral username was given, look up who it belongs to (optional — doesn't block signup if not found)
+  let referredBy = null;
+  if (referralUsername) {
+    const referrer = db.prepare("SELECT id FROM users WHERE username = ?").get(referralUsername);
+    if (referrer) referredBy = referrer.id;
+  }
 
   const id = uuid();
   const hash = await bcrypt.hash(password, 10);
   db.prepare(
-    "INSERT INTO users (id, email, password_hash, wallet_balance) VALUES (?, ?, ?, 0)"
-  ).run(id, email, hash);
+    `INSERT INTO users (id, full_name, username, email, phone, password_hash, referred_by, wallet_balance)
+     VALUES (?, ?, ?, ?, ?, ?, ?, 0)`
+  ).run(id, fullName, username, email, phone, hash, referredBy);
 
   const token = jwt.sign({ sub: id }, process.env.JWT_SECRET, { expiresIn: "30d" });
-  res.status(201).json({ token, user: { id, email, wallet_balance: 0 } });
+  res.status(201).json({
+    token,
+    user: { id, fullName, username, email, phone, wallet_balance: 0 },
+  });
 });
 
 router.post("/login", async (req, res) => {
@@ -34,7 +52,17 @@ router.post("/login", async (req, res) => {
   if (!ok) return res.status(401).json({ error: "Invalid credentials" });
 
   const token = jwt.sign({ sub: user.id }, process.env.JWT_SECRET, { expiresIn: "30d" });
-  res.json({ token, user: { id: user.id, email: user.email, wallet_balance: user.wallet_balance } });
+  res.json({
+    token,
+    user: {
+      id: user.id,
+      fullName: user.full_name,
+      username: user.username,
+      email: user.email,
+      phone: user.phone,
+      wallet_balance: user.wallet_balance,
+    },
+  });
 });
 
 module.exports = router;

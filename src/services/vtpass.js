@@ -45,8 +45,12 @@ function authHeaders() {
 }
 
 // Pulls the current live plan list + prices for a network + category.
+// Note: VTpass's own API is inconsistent — most endpoints return the field
+// as "variations", but their SME-specific endpoints (Glo SME, 9mobile SME)
+// return it as "varations" (missing the letter "i" — a typo on their end,
+// confirmed in their own documentation). We check both spellings.
 async function getDataVariations(network, category = "gifting") {
-  const serviceID = SERVICE_IDS[network]?.[category];
+  const serviceID = getServiceId(network, category);
   if (!serviceID) return [];
   const res = await fetch(`${BASE}/service-variations?serviceID=${serviceID}`, {
     headers: { "api-key": process.env.VTPASS_PUBLIC_KEY },
@@ -56,7 +60,10 @@ async function getDataVariations(network, category = "gifting") {
 }
 
 function getServiceId(network, category = "gifting") {
-  return SERVICE_IDS[network]?.[category];
+  // "cg" is the label we show users for Glo/9mobile's SME service — map it
+  // to the real internal key so the lookup actually finds the service.
+  const key = category === "cg" ? "sme" : category;
+  return SERVICE_IDS[network]?.[key];
 }
 
 // Buys a data bundle. requestId must be unique per attempt — VTpass uses it

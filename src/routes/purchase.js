@@ -7,31 +7,54 @@ const vtpass = require("../services/vtpass");
 const router = express.Router();
 const MARKUP = parseFloat(process.env.MARKUP_PERCENT || "0.05");
 
+// Returns the full list of categories for a network (real ones and
+// not-yet-available ones), so the frontend can render all tabs but grey
+// out the ones with no working VTpass service behind them yet.
+router.get("/categories/:network", requireAuth, (req, res) => {
+  const { network } = req.params;
+  const all = vtpass.ALL_CATEGORIES[network] || [];
+  const available = vtpass.AVAILABLE_CATEGORIES[network] || [];
+  res.json({
+    network,
+    categories: all.map((cat) => ({
+      id: cat,
+      label: cat.toUpperCase(),
+      available: available.includes(cat) || available.includes(cat === "cg" ? "sme" : cat),
+    })),
+  });
+});
+
 // Live plan list with YOUR sale price (cost + markup) baked in, so the
 // frontend never has to know VTpass's raw prices.
 router.get("/plans/:network", requireAuth, async (req, res) => {
   const { network } = req.params;
-  if (!vtpass.SERVICE_IDS[network]) return res.status(400).json({ error: "Unknown network" });
+  const category = req.query.category || "gifting";
 
-  const variations = await vtpass.getDataVariations(network);
+  const serviceID = vtpass.getServiceId(network, category);
+  if (!serviceID) {
+    // This category isn't available for this network yet (e.g. MTN "corporate")
+    return res.json({ network, category, plans: [], available: false });
+  }
+
+  const variations = await vtpass.getDataVariations(network, category);
   const plans = variations.map((v) => ({
     code: v.variation_code,
     label: v.name,
     cost_naira: parseFloat(v.variation_amount),
     sale_naira: Math.ceil(parseFloat(v.variation_amount) * (1 + MARKUP)),
   }));
-  res.json({ network, plans });
+  res.json({ network, category, plans, available: true });
 });
 
 // Debits the wallet and calls VTpass, in that order, inside one transaction
 // so a crash between the two can't leave money debited with nothing delivered.
 router.post("/data", requireAuth, async (req, res) => {
-  const { network, phone, planCode } = req.body;
+  const { network, phone, planCode, category = "gifting" } = req.body;
   if (!network || !phone || !planCode) {
     return res.status(400).json({ error: "network, phone, and planCode are required" });
   }
 
-  const variations = await vtpass.getDataVariations(network);
+  const variations = await vtpass.getDataVariations(network, category);
   const plan = variations.find((v) => v.variation_code === planCode);
   if (!plan) return res.status(400).json({ error: "Plan not found — prices may have changed, refetch /plans" });
 
@@ -55,7 +78,7 @@ router.post("/data", requireAuth, async (req, res) => {
     db.prepare(
       `INSERT INTO wallet_ledger (id, user_id, type, amount, balance_after, reference, meta)
        VALUES (?, ?, 'purchase', ?, ?, ?, ?)`
-    ).run(uuid(), req.userId, -saleKobo, newBalance, orderId, JSON.stringify({ network, phone }));
+    ).run(uuid(), req.userId, -saleKobo, newBalance, orderId, JSON.stringify({ network, phone, category }));
     db.prepare(
       `INSERT INTO orders (id, user_id, network, phone, plan_code, plan_label, cost_price, sale_price, status, vtpass_request_id)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)`
@@ -65,7 +88,7 @@ router.post("/data", requireAuth, async (req, res) => {
 
   let result;
   try {
-    result = await vtpass.buyData({ requestId, network, phone, variationCode: planCode });
+    result = await vtpass.buyData({ requestId, network, category, phone, variationCode: planCode });
   } catch (err) {
     result = { code: "network_error", response_description: err.message };
   }
@@ -77,8 +100,6 @@ router.post("/data", requireAuth, async (req, res) => {
     db.prepare("UPDATE orders SET status = 'success', vtpass_response = ? WHERE id = ?")
       .run(JSON.stringify(result), orderId);
   } else if (failed) {
-    // Refund: reverse the debit under a NEW reference (refund:<orderId>) so
-    // it can't collide with the original debit entry.
     const refundTx = db.transaction(() => {
       const u = db.prepare("SELECT wallet_balance FROM users WHERE id = ?").get(req.userId);
       const newBalance = u.wallet_balance + saleKobo;
@@ -92,9 +113,6 @@ router.post("/data", requireAuth, async (req, res) => {
     });
     refundTx();
   } else {
-    // Ambiguous ("099" / timeout) — do NOT refund automatically. Leave as
-    // pending and resolve via requery (see /purchase/resolve-pending below),
-    // otherwise you risk refunding an order VTpass actually delivered.
     db.prepare("UPDATE orders SET vtpass_response = ? WHERE id = ?").run(JSON.stringify(result), orderId);
   }
 
@@ -137,7 +155,6 @@ router.post("/resolve-pending", requireAuth, async (req, res) => {
       refundTx();
       resolved.push({ order_id: order.id, status: "failed" });
     }
-    // else still processing — leave pending, try again next sweep
   }
   res.json({ resolved });
 });

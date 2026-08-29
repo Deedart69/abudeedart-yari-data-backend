@@ -52,7 +52,7 @@ async function getDataVariations(network, category = "gifting") {
     headers: { "api-key": process.env.VTPASS_PUBLIC_KEY },
   });
   const data = await res.json();
-  return data?.content?.variations || [];
+  return data?.content?.variations || data?.content?.varations || [];
 }
 
 function getServiceId(network, category = "gifting") {

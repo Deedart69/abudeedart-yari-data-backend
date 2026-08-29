@@ -7,9 +7,6 @@ const vtpass = require("../services/vtpass");
 const router = express.Router();
 const MARKUP = parseFloat(process.env.MARKUP_PERCENT || "0.05");
 
-// Returns the full list of categories for a network (real ones and
-// not-yet-available ones), so the frontend can render all tabs but grey
-// out the ones with no working VTpass service behind them yet.
 router.get("/categories/:network", requireAuth, (req, res) => {
   const { network } = req.params;
   const all = vtpass.ALL_CATEGORIES[network] || [];
@@ -24,15 +21,12 @@ router.get("/categories/:network", requireAuth, (req, res) => {
   });
 });
 
-// Live plan list with YOUR sale price (cost + markup) baked in, so the
-// frontend never has to know VTpass's raw prices.
 router.get("/plans/:network", requireAuth, async (req, res) => {
   const { network } = req.params;
   const category = req.query.category || "gifting";
 
   const serviceID = vtpass.getServiceId(network, category);
   if (!serviceID) {
-    // This category isn't available for this network yet (e.g. MTN "corporate")
     return res.json({ network, category, plans: [], available: false });
   }
 
@@ -46,8 +40,6 @@ router.get("/plans/:network", requireAuth, async (req, res) => {
   res.json({ network, category, plans, available: true });
 });
 
-// Debits the wallet and calls VTpass, in that order, inside one transaction
-// so a crash between the two can't leave money debited with nothing delivered.
 router.post("/data", requireAuth, async (req, res) => {
   const { network, phone, planCode, category = "gifting" } = req.body;
   if (!network || !phone || !planCode) {
@@ -67,11 +59,8 @@ router.post("/data", requireAuth, async (req, res) => {
   }
 
   const orderId = uuid();
-  const requestId = `order_${orderId}`.slice(0, 40); // VTpass caps request_id length
+  const requestId = `order_${orderId}`.slice(0, 40);
 
-  // Debit first and record as 'pending' — if VTpass fails, we refund below.
-  // This ordering means a customer is briefly debited during the call, never
-  // "delivered but not charged", which is the failure mode that costs you money.
   const debit = db.transaction(() => {
     const newBalance = user.wallet_balance - saleKobo;
     db.prepare("UPDATE users SET wallet_balance = ? WHERE id = ?").run(newBalance, req.userId);
@@ -94,7 +83,7 @@ router.post("/data", requireAuth, async (req, res) => {
   }
 
   const succeeded = result.code === "000" && result?.content?.transactions?.status === "delivered";
-  const failed = result.code !== "000" && result.code !== "099"; // 099 = processing, needs requery
+  const failed = result.code !== "000" && result.code !== "099";
 
   if (succeeded) {
     db.prepare("UPDATE orders SET status = 'success', vtpass_response = ? WHERE id = ?")
@@ -125,8 +114,76 @@ router.post("/data", requireAuth, async (req, res) => {
   });
 });
 
-// Run this on a schedule (e.g. every 2 min via cron) for any order still
-// 'pending' after a minute or two, to resolve ones VTpass left ambiguous.
+router.post("/airtime", requireAuth, async (req, res) => {
+  const { network, phone, amountNaira } = req.body;
+  if (!network || !phone || !amountNaira || amountNaira < 50) {
+    return res.status(400).json({ error: "network, phone, and a minimum ₦50 amount are required" });
+  }
+
+  const costKobo = Math.round(amountNaira * 100);
+  const saleKobo = Math.ceil(costKobo * (1 + MARKUP));
+
+  const user = db.prepare("SELECT wallet_balance FROM users WHERE id = ?").get(req.userId);
+  if (user.wallet_balance < saleKobo) {
+    return res.status(402).json({ error: "Insufficient wallet balance" });
+  }
+
+  const orderId = uuid();
+  const requestId = `order_${orderId}`.slice(0, 40);
+
+  const debit = db.transaction(() => {
+    const newBalance = user.wallet_balance - saleKobo;
+    db.prepare("UPDATE users SET wallet_balance = ? WHERE id = ?").run(newBalance, req.userId);
+    db.prepare(
+      `INSERT INTO wallet_ledger (id, user_id, type, amount, balance_after, reference, meta)
+       VALUES (?, ?, 'purchase', ?, ?, ?, ?)`
+    ).run(uuid(), req.userId, -saleKobo, newBalance, orderId, JSON.stringify({ network, phone, type: "airtime" }));
+    db.prepare(
+      `INSERT INTO orders (id, user_id, network, phone, plan_code, plan_label, cost_price, sale_price, status, vtpass_request_id)
+       VALUES (?, ?, ?, ?, 'airtime', ?, ?, ?, 'pending', ?)`
+    ).run(orderId, req.userId, network, phone, `₦${amountNaira} Airtime`, costKobo, saleKobo, requestId);
+  });
+  debit();
+
+  let result;
+  try {
+    result = await vtpass.buyAirtime({ requestId, network, phone, amountNaira });
+  } catch (err) {
+    result = { code: "network_error", response_description: err.message };
+  }
+
+  const succeeded = result.code === "000" && result?.content?.transactions?.status === "delivered";
+  const failed = result.code !== "000" && result.code !== "099";
+
+  if (succeeded) {
+    db.prepare("UPDATE orders SET status = 'success', vtpass_response = ? WHERE id = ?")
+      .run(JSON.stringify(result), orderId);
+  } else if (failed) {
+    const refundTx = db.transaction(() => {
+      const u = db.prepare("SELECT wallet_balance FROM users WHERE id = ?").get(req.userId);
+      const newBalance = u.wallet_balance + saleKobo;
+      db.prepare("UPDATE users SET wallet_balance = ? WHERE id = ?").run(newBalance, req.userId);
+      db.prepare(
+        `INSERT INTO wallet_ledger (id, user_id, type, amount, balance_after, reference, meta)
+         VALUES (?, ?, 'refund', ?, ?, ?, ?)`
+      ).run(uuid(), req.userId, saleKobo, newBalance, `refund:${orderId}`, JSON.stringify({ reason: "vtpass_failed" }));
+      db.prepare("UPDATE orders SET status = 'failed', vtpass_response = ? WHERE id = ?")
+        .run(JSON.stringify(result), orderId);
+    });
+    refundTx();
+  } else {
+    db.prepare("UPDATE orders SET vtpass_response = ? WHERE id = ?").run(JSON.stringify(result), orderId);
+  }
+
+  const finalUser = db.prepare("SELECT wallet_balance FROM users WHERE id = ?").get(req.userId);
+  res.json({
+    order_id: orderId,
+    status: succeeded ? "success" : failed ? "failed" : "pending",
+    wallet_balance: finalUser.wallet_balance,
+    vtpass_message: result.response_description,
+  });
+});
+
 router.post("/resolve-pending", requireAuth, async (req, res) => {
   const pending = db
     .prepare("SELECT * FROM orders WHERE user_id = ? AND status = 'pending'")

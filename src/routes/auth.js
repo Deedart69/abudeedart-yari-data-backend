@@ -2,7 +2,7 @@ const express = require("express");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const { v4: uuid } = require("uuid");
-const db = require("../db");
+const { pool } = require("../db");
 
 const router = express.Router();
 
@@ -16,25 +16,25 @@ router.post("/register", async (req, res) => {
     return res.status(400).json({ error: "Password must be at least 8 characters" });
   }
 
-  const existingEmail = db.prepare("SELECT id FROM users WHERE email = ?").get(email);
-  if (existingEmail) return res.status(409).json({ error: "Email already registered" });
+  const existingEmail = await pool.query("SELECT id FROM users WHERE email = $1", [email]);
+  if (existingEmail.rows.length > 0) return res.status(409).json({ error: "Email already registered" });
 
-  const existingUsername = db.prepare("SELECT id FROM users WHERE username = ?").get(username);
-  if (existingUsername) return res.status(409).json({ error: "Username already taken" });
+  const existingUsername = await pool.query("SELECT id FROM users WHERE username = $1", [username]);
+  if (existingUsername.rows.length > 0) return res.status(409).json({ error: "Username already taken" });
 
-  // If a referral username was given, look up who it belongs to (optional — doesn't block signup if not found)
   let referredBy = null;
   if (referralUsername) {
-    const referrer = db.prepare("SELECT id FROM users WHERE username = ?").get(referralUsername);
-    if (referrer) referredBy = referrer.id;
+    const referrer = await pool.query("SELECT id FROM users WHERE username = $1", [referralUsername]);
+    if (referrer.rows.length > 0) referredBy = referrer.rows[0].id;
   }
 
   const id = uuid();
   const hash = await bcrypt.hash(password, 10);
-  db.prepare(
+  await pool.query(
     `INSERT INTO users (id, full_name, username, email, phone, password_hash, referred_by, wallet_balance)
-     VALUES (?, ?, ?, ?, ?, ?, ?, 0)`
-  ).run(id, fullName, username, email, phone, hash, referredBy);
+     VALUES ($1, $2, $3, $4, $5, $6, $7, 0)`,
+    [id, fullName, username, email, phone, hash, referredBy]
+  );
 
   const token = jwt.sign({ sub: id }, process.env.JWT_SECRET, { expiresIn: "30d" });
   res.status(201).json({
@@ -45,7 +45,8 @@ router.post("/register", async (req, res) => {
 
 router.post("/login", async (req, res) => {
   const { email, password } = req.body;
-  const user = db.prepare("SELECT * FROM users WHERE email = ?").get(email);
+  const result = await pool.query("SELECT * FROM users WHERE email = $1", [email]);
+  const user = result.rows[0];
   if (!user) return res.status(401).json({ error: "Invalid credentials" });
 
   const ok = await bcrypt.compare(password, user.password_hash);

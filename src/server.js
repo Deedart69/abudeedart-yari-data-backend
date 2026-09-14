@@ -1,6 +1,7 @@
 require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
+const { initSchema } = require("./db");
 
 const authRoutes = require("./routes/auth");
 const walletRoutes = require("./routes/wallet");
@@ -23,4 +24,11 @@ app.use("/api/purchase", purchaseRoutes);
 app.get("/health", (req, res) => res.json({ ok: true }));
 
 const PORT = process.env.PORT || 4000;
-app.listen(PORT, () => console.log(`DataDock backend running on port ${PORT}`));
+initSchema()
+  .then(() => {
+    app.listen(PORT, () => console.log(`DataDock backend running on port ${PORT}`));
+  })
+  .catch((err) => {
+    console.error("Failed to initialize database schema:", err);
+    process.exit(1);
+  });

@@ -1,61 +1,80 @@
-// db.js — SQLite for a fast local/small-scale start.
-// Swap to Postgres later: the query shapes here are simple enough to port
-// almost line-for-line (see README "Moving to Postgres").
-const Database = require("better-sqlite3");
-const path = require("path");
+const { Pool } = require("pg");
 
-const db = new Database(path.join(__dirname, "..", "datadock.db"));
-db.pragma("journal_mode = WAL");
+// Postgres on Neon — this replaces the old SQLite file, which lived on
+// Render's disk and got wiped every redeploy. Neon is a separate, always-on
+// database, so your data now survives deploys, restarts, everything.
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: { rejectUnauthorized: false },
+});
 
-db.exec(`
+async function initSchema() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS users (
+      id TEXT PRIMARY KEY,
+      full_name TEXT NOT NULL,
+      username TEXT UNIQUE NOT NULL,
+      email TEXT UNIQUE NOT NULL,
+      phone TEXT NOT NULL,
+      password_hash TEXT NOT NULL,
+      referred_by TEXT,
+      wallet_balance INTEGER NOT NULL DEFAULT 0,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
 
-CREATE TABLE IF NOT EXISTS users (
-  id TEXT PRIMARY KEY,
-  full_name TEXT NOT NULL,
-  username TEXT UNIQUE NOT NULL,
-  email TEXT UNIQUE NOT NULL,
-  phone TEXT NOT NULL,
-  password_hash TEXT NOT NULL,
-  referred_by TEXT,
-  wallet_balance INTEGER NOT NULL DEFAULT 0, -- kobo (NGN * 100), avoids float errors
-  created_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
--- Every change to a wallet balance is a row here. Balance on the user table
--- is a cache; this table is the source of truth / audit trail.
-CREATE TABLE IF NOT EXISTS wallet_ledger (
-  id TEXT PRIMARY KEY,
-  user_id TEXT NOT NULL REFERENCES users(id),
-  type TEXT NOT NULL,              -- 'funding' | 'purchase' | 'refund'
-  amount INTEGER NOT NULL,         -- kobo, positive=credit, negative=debit
-  balance_after INTEGER NOT NULL,
-  reference TEXT UNIQUE NOT NULL,  -- idempotency key (paystack ref or order id)
-  meta TEXT,                       -- JSON blob for extra context
-  created_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
+    CREATE TABLE IF NOT EXISTS wallet_ledger (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL REFERENCES users(id),
+      type TEXT NOT NULL,
+      amount INTEGER NOT NULL,
+      balance_after INTEGER NOT NULL,
+      reference TEXT UNIQUE NOT NULL,
+      meta TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
 
-CREATE TABLE IF NOT EXISTS orders (
-  id TEXT PRIMARY KEY,
-  user_id TEXT NOT NULL REFERENCES users(id),
-  network TEXT NOT NULL,
-  phone TEXT NOT NULL,
-  plan_code TEXT NOT NULL,
-  plan_label TEXT NOT NULL,
-  cost_price INTEGER NOT NULL,     -- kobo, what VTpass charged you
-  sale_price INTEGER NOT NULL,     -- kobo, what you charged the customer
-  status TEXT NOT NULL,            -- 'pending' | 'success' | 'failed'
-  vtpass_request_id TEXT,
-  vtpass_response TEXT,            -- JSON blob, raw response for debugging
-  created_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
+    CREATE TABLE IF NOT EXISTS orders (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL REFERENCES users(id),
+      network TEXT NOT NULL,
+      phone TEXT NOT NULL,
+      plan_code TEXT NOT NULL,
+      plan_label TEXT NOT NULL,
+      cost_price INTEGER NOT NULL,
+      sale_price INTEGER NOT NULL,
+      status TEXT NOT NULL,
+      vtpass_request_id TEXT,
+      vtpass_response TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
 
-CREATE TABLE IF NOT EXISTS payments (
-  id TEXT PRIMARY KEY,
-  user_id TEXT NOT NULL REFERENCES users(id),
-  reference TEXT UNIQUE NOT NULL,  -- paystack reference
-  amount INTEGER NOT NULL,         -- kobo
-  status TEXT NOT NULL,            -- 'pending' | 'success' | 'failed'
-  created_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
-`);
+    CREATE TABLE IF NOT EXISTS payments (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL REFERENCES users(id),
+      reference TEXT UNIQUE NOT NULL,
+      amount INTEGER NOT NULL,
+      status TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+  `);
+}
 
-module.exports = db;
+// Runs a group of queries as one all-or-nothing transaction — used
+// anywhere we touch wallet balance + ledger + orders together, so a crash
+// mid-way can't leave money debited with nothing recorded.
+async function withTransaction(fn) {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const result = await fn(client);
+    await client.query("COMMIT");
+    return result;
+  } catch (err) {
+    await client.query("ROLLBACK");
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
+module.exports = { pool, initSchema, withTransaction };

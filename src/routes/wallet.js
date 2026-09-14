@@ -1,6 +1,6 @@
 const express = require("express");
 const { v4: uuid } = require("uuid");
-const db = require("../db");
+const { pool, withTransaction } = require("../db");
 const { requireAuth } = require("../middleware/auth");
 const paystack = require("../services/paystack");
 
@@ -9,35 +9,36 @@ const router = express.Router();
 // Credits a user's wallet exactly once per unique reference. This is the
 // single choke point every funding path (webhook, verify-on-return) goes
 // through, so double-crediting is structurally impossible, not just unlikely.
-function creditWallet({ userId, amountKobo, reference, meta }) {
-  const already = db.prepare("SELECT id FROM wallet_ledger WHERE reference = ?").get(reference);
-  if (already) return; // already processed — safe to call this twice
+async function creditWallet({ userId, amountKobo, reference, meta }) {
+  const already = await pool.query("SELECT id FROM wallet_ledger WHERE reference = $1", [reference]);
+  if (already.rows.length > 0) return; // already processed — safe to call this twice
 
-  const tx = db.transaction(() => {
-    const user = db.prepare("SELECT wallet_balance FROM users WHERE id = ?").get(userId);
-    const newBalance = user.wallet_balance + amountKobo;
-    db.prepare("UPDATE users SET wallet_balance = ? WHERE id = ?").run(newBalance, userId);
-    db.prepare(
+  await withTransaction(async (client) => {
+    const userRes = await client.query("SELECT wallet_balance FROM users WHERE id = $1", [userId]);
+    const newBalance = userRes.rows[0].wallet_balance + amountKobo;
+    await client.query("UPDATE users SET wallet_balance = $1 WHERE id = $2", [newBalance, userId]);
+    await client.query(
       `INSERT INTO wallet_ledger (id, user_id, type, amount, balance_after, reference, meta)
-       VALUES (?, ?, 'funding', ?, ?, ?, ?)`
-    ).run(uuid(), userId, amountKobo, newBalance, reference, JSON.stringify(meta || {}));
+       VALUES ($1, $2, 'funding', $3, $4, $5, $6)`,
+      [uuid(), userId, amountKobo, newBalance, reference, JSON.stringify(meta || {})]
+    );
   });
-  tx();
 }
 
-// 1. Frontend calls this to start a top-up. Returns a Paystack checkout URL.
 router.post("/fund/initialize", requireAuth, async (req, res) => {
   const { amountNaira } = req.body;
   if (!amountNaira || amountNaira < 100) {
     return res.status(400).json({ error: "Minimum top-up is ₦100" });
   }
-  const user = db.prepare("SELECT email FROM users WHERE id = ?").get(req.userId);
+  const userRes = await pool.query("SELECT email FROM users WHERE id = $1", [req.userId]);
+  const user = userRes.rows[0];
   const reference = `fund_${uuid()}`;
   const amountKobo = Math.round(amountNaira * 100);
 
-  db.prepare(
-    "INSERT INTO payments (id, user_id, reference, amount, status) VALUES (?, ?, ?, ?, 'pending')"
-  ).run(uuid(), req.userId, reference, amountKobo);
+  await pool.query(
+    "INSERT INTO payments (id, user_id, reference, amount, status) VALUES ($1, $2, $3, $4, 'pending')",
+    [uuid(), req.userId, reference, amountKobo]
+  );
 
   const data = await paystack.initializeTransaction({
     email: user.email,
@@ -49,34 +50,27 @@ router.post("/fund/initialize", requireAuth, async (req, res) => {
   res.json({ authorization_url: data.authorization_url, reference });
 });
 
-// 2. Fallback path: if the frontend redirects back before the webhook lands,
-// this actively checks Paystack rather than trusting the redirect alone.
 router.get("/fund/verify/:reference", requireAuth, async (req, res) => {
   const { reference } = req.params;
   const result = await paystack.verifyTransaction(reference);
 
   if (result.status === "success") {
-    creditWallet({
+    await creditWallet({
       userId: req.userId,
       amountKobo: result.amount,
       reference,
       meta: { channel: result.channel },
     });
-    db.prepare("UPDATE payments SET status = 'success' WHERE reference = ?").run(reference);
+    await pool.query("UPDATE payments SET status = 'success' WHERE reference = $1", [reference]);
   } else {
-    db.prepare("UPDATE payments SET status = 'failed' WHERE reference = ?").run(reference);
+    await pool.query("UPDATE payments SET status = 'failed' WHERE reference = $1", [reference]);
   }
 
-  const user = db.prepare("SELECT wallet_balance FROM users WHERE id = ?").get(req.userId);
-  res.json({ status: result.status, wallet_balance: user.wallet_balance });
+  const userRes = await pool.query("SELECT wallet_balance FROM users WHERE id = $1", [req.userId]);
+  res.json({ status: result.status, wallet_balance: userRes.rows[0].wallet_balance });
 });
 
-// 3. The real source of truth: Paystack calls this server-to-server the
-// moment a payment succeeds, independent of whether the customer's browser
-// ever makes it back to your site.
-// Mount this route with express.raw() in server.js — signature verification
-// needs the exact raw bytes, not the parsed JSON body.
-router.post("/webhook/paystack", (req, res) => {
+router.post("/webhook/paystack", async (req, res) => {
   const signature = req.headers["x-paystack-signature"];
   if (!paystack.verifyWebhookSignature(req.body, signature)) {
     return res.status(401).send("Invalid signature");
@@ -85,24 +79,25 @@ router.post("/webhook/paystack", (req, res) => {
   const event = JSON.parse(req.body.toString());
   if (event.event === "charge.success") {
     const { reference, amount, customer } = event.data;
-    const payment = db.prepare("SELECT user_id FROM payments WHERE reference = ?").get(reference);
+    const paymentRes = await pool.query("SELECT user_id FROM payments WHERE reference = $1", [reference]);
+    const payment = paymentRes.rows[0];
     if (payment) {
-      creditWallet({
+      await creditWallet({
         userId: payment.user_id,
         amountKobo: amount,
         reference,
         meta: { email: customer.email },
       });
-      db.prepare("UPDATE payments SET status = 'success' WHERE reference = ?").run(reference);
+      await pool.query("UPDATE payments SET status = 'success' WHERE reference = $1", [reference]);
     }
   }
 
-  res.sendStatus(200); // Paystack retries on non-200, so always ack once handled
+  res.sendStatus(200);
 });
 
-router.get("/balance", requireAuth, (req, res) => {
-  const user = db.prepare("SELECT wallet_balance FROM users WHERE id = ?").get(req.userId);
-  res.json({ wallet_balance: user.wallet_balance });
+router.get("/balance", requireAuth, async (req, res) => {
+  const userRes = await pool.query("SELECT wallet_balance FROM users WHERE id = $1", [req.userId]);
+  res.json({ wallet_balance: userRes.rows[0].wallet_balance });
 });
 
 module.exports = router;

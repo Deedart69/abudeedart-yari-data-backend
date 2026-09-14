@@ -1,6 +1,6 @@
 const express = require("express");
 const { v4: uuid } = require("uuid");
-const db = require("../db");
+const { pool, withTransaction } = require("../db");
 const { requireAuth } = require("../middleware/auth");
 const vtpass = require("../services/vtpass");
 
@@ -53,7 +53,8 @@ router.post("/data", requireAuth, async (req, res) => {
   const costKobo = Math.round(parseFloat(plan.variation_amount) * 100);
   const saleKobo = Math.ceil(costKobo * (1 + MARKUP));
 
-  const user = db.prepare("SELECT wallet_balance FROM users WHERE id = ?").get(req.userId);
+  const userRes = await pool.query("SELECT wallet_balance FROM users WHERE id = $1", [req.userId]);
+  const user = userRes.rows[0];
   if (user.wallet_balance < saleKobo) {
     return res.status(402).json({ error: "Insufficient wallet balance" });
   }
@@ -61,19 +62,20 @@ router.post("/data", requireAuth, async (req, res) => {
   const orderId = uuid();
   const requestId = `order_${orderId}`.slice(0, 40);
 
-  const debit = db.transaction(() => {
+  await withTransaction(async (client) => {
     const newBalance = user.wallet_balance - saleKobo;
-    db.prepare("UPDATE users SET wallet_balance = ? WHERE id = ?").run(newBalance, req.userId);
-    db.prepare(
+    await client.query("UPDATE users SET wallet_balance = $1 WHERE id = $2", [newBalance, req.userId]);
+    await client.query(
       `INSERT INTO wallet_ledger (id, user_id, type, amount, balance_after, reference, meta)
-       VALUES (?, ?, 'purchase', ?, ?, ?, ?)`
-    ).run(uuid(), req.userId, -saleKobo, newBalance, orderId, JSON.stringify({ network, phone, category }));
-    db.prepare(
+       VALUES ($1, $2, 'purchase', $3, $4, $5, $6)`,
+      [uuid(), req.userId, -saleKobo, newBalance, orderId, JSON.stringify({ network, phone, category })]
+    );
+    await client.query(
       `INSERT INTO orders (id, user_id, network, phone, plan_code, plan_label, cost_price, sale_price, status, vtpass_request_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)`
-    ).run(orderId, req.userId, network, phone, planCode, plan.name, costKobo, saleKobo, requestId);
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'pending', $9)`,
+      [orderId, req.userId, network, phone, planCode, plan.name, costKobo, saleKobo, requestId]
+    );
   });
-  debit();
 
   let result;
   try {
@@ -86,30 +88,34 @@ router.post("/data", requireAuth, async (req, res) => {
   const failed = result.code !== "000" && result.code !== "099";
 
   if (succeeded) {
-    db.prepare("UPDATE orders SET status = 'success', vtpass_response = ? WHERE id = ?")
-      .run(JSON.stringify(result), orderId);
+    await pool.query("UPDATE orders SET status = 'success', vtpass_response = $1 WHERE id = $2", [
+      JSON.stringify(result),
+      orderId,
+    ]);
   } else if (failed) {
-    const refundTx = db.transaction(() => {
-      const u = db.prepare("SELECT wallet_balance FROM users WHERE id = ?").get(req.userId);
-      const newBalance = u.wallet_balance + saleKobo;
-      db.prepare("UPDATE users SET wallet_balance = ? WHERE id = ?").run(newBalance, req.userId);
-      db.prepare(
+    await withTransaction(async (client) => {
+      const uRes = await client.query("SELECT wallet_balance FROM users WHERE id = $1", [req.userId]);
+      const newBalance = uRes.rows[0].wallet_balance + saleKobo;
+      await client.query("UPDATE users SET wallet_balance = $1 WHERE id = $2", [newBalance, req.userId]);
+      await client.query(
         `INSERT INTO wallet_ledger (id, user_id, type, amount, balance_after, reference, meta)
-         VALUES (?, ?, 'refund', ?, ?, ?, ?)`
-      ).run(uuid(), req.userId, saleKobo, newBalance, `refund:${orderId}`, JSON.stringify({ reason: "vtpass_failed" }));
-      db.prepare("UPDATE orders SET status = 'failed', vtpass_response = ? WHERE id = ?")
-        .run(JSON.stringify(result), orderId);
+         VALUES ($1, $2, 'refund', $3, $4, $5, $6)`,
+        [uuid(), req.userId, saleKobo, newBalance, `refund:${orderId}`, JSON.stringify({ reason: "vtpass_failed" })]
+      );
+      await client.query("UPDATE orders SET status = 'failed', vtpass_response = $1 WHERE id = $2", [
+        JSON.stringify(result),
+        orderId,
+      ]);
     });
-    refundTx();
   } else {
-    db.prepare("UPDATE orders SET vtpass_response = ? WHERE id = ?").run(JSON.stringify(result), orderId);
+    await pool.query("UPDATE orders SET vtpass_response = $1 WHERE id = $2", [JSON.stringify(result), orderId]);
   }
 
-  const finalUser = db.prepare("SELECT wallet_balance FROM users WHERE id = ?").get(req.userId);
+  const finalUserRes = await pool.query("SELECT wallet_balance FROM users WHERE id = $1", [req.userId]);
   res.json({
     order_id: orderId,
     status: succeeded ? "success" : failed ? "failed" : "pending",
-    wallet_balance: finalUser.wallet_balance,
+    wallet_balance: finalUserRes.rows[0].wallet_balance,
     vtpass_message: result.response_description,
   });
 });
@@ -123,7 +129,8 @@ router.post("/airtime", requireAuth, async (req, res) => {
   const costKobo = Math.round(amountNaira * 100);
   const saleKobo = Math.ceil(costKobo * (1 + MARKUP));
 
-  const user = db.prepare("SELECT wallet_balance FROM users WHERE id = ?").get(req.userId);
+  const userRes = await pool.query("SELECT wallet_balance FROM users WHERE id = $1", [req.userId]);
+  const user = userRes.rows[0];
   if (user.wallet_balance < saleKobo) {
     return res.status(402).json({ error: "Insufficient wallet balance" });
   }
@@ -131,19 +138,20 @@ router.post("/airtime", requireAuth, async (req, res) => {
   const orderId = uuid();
   const requestId = `order_${orderId}`.slice(0, 40);
 
-  const debit = db.transaction(() => {
+  await withTransaction(async (client) => {
     const newBalance = user.wallet_balance - saleKobo;
-    db.prepare("UPDATE users SET wallet_balance = ? WHERE id = ?").run(newBalance, req.userId);
-    db.prepare(
+    await client.query("UPDATE users SET wallet_balance = $1 WHERE id = $2", [newBalance, req.userId]);
+    await client.query(
       `INSERT INTO wallet_ledger (id, user_id, type, amount, balance_after, reference, meta)
-       VALUES (?, ?, 'purchase', ?, ?, ?, ?)`
-    ).run(uuid(), req.userId, -saleKobo, newBalance, orderId, JSON.stringify({ network, phone, type: "airtime" }));
-    db.prepare(
+       VALUES ($1, $2, 'purchase', $3, $4, $5, $6)`,
+      [uuid(), req.userId, -saleKobo, newBalance, orderId, JSON.stringify({ network, phone, type: "airtime" })]
+    );
+    await client.query(
       `INSERT INTO orders (id, user_id, network, phone, plan_code, plan_label, cost_price, sale_price, status, vtpass_request_id)
-       VALUES (?, ?, ?, ?, 'airtime', ?, ?, ?, 'pending', ?)`
-    ).run(orderId, req.userId, network, phone, `₦${amountNaira} Airtime`, costKobo, saleKobo, requestId);
+       VALUES ($1, $2, $3, $4, 'airtime', $5, $6, $7, 'pending', $8)`,
+      [orderId, req.userId, network, phone, `₦${amountNaira} Airtime`, costKobo, saleKobo, requestId]
+    );
   });
-  debit();
 
   let result;
   try {
@@ -156,71 +164,81 @@ router.post("/airtime", requireAuth, async (req, res) => {
   const failed = result.code !== "000" && result.code !== "099";
 
   if (succeeded) {
-    db.prepare("UPDATE orders SET status = 'success', vtpass_response = ? WHERE id = ?")
-      .run(JSON.stringify(result), orderId);
+    await pool.query("UPDATE orders SET status = 'success', vtpass_response = $1 WHERE id = $2", [
+      JSON.stringify(result),
+      orderId,
+    ]);
   } else if (failed) {
-    const refundTx = db.transaction(() => {
-      const u = db.prepare("SELECT wallet_balance FROM users WHERE id = ?").get(req.userId);
-      const newBalance = u.wallet_balance + saleKobo;
-      db.prepare("UPDATE users SET wallet_balance = ? WHERE id = ?").run(newBalance, req.userId);
-      db.prepare(
+    await withTransaction(async (client) => {
+      const uRes = await client.query("SELECT wallet_balance FROM users WHERE id = $1", [req.userId]);
+      const newBalance = uRes.rows[0].wallet_balance + saleKobo;
+      await client.query("UPDATE users SET wallet_balance = $1 WHERE id = $2", [newBalance, req.userId]);
+      await client.query(
         `INSERT INTO wallet_ledger (id, user_id, type, amount, balance_after, reference, meta)
-         VALUES (?, ?, 'refund', ?, ?, ?, ?)`
-      ).run(uuid(), req.userId, saleKobo, newBalance, `refund:${orderId}`, JSON.stringify({ reason: "vtpass_failed" }));
-      db.prepare("UPDATE orders SET status = 'failed', vtpass_response = ? WHERE id = ?")
-        .run(JSON.stringify(result), orderId);
+         VALUES ($1, $2, 'refund', $3, $4, $5, $6)`,
+        [uuid(), req.userId, saleKobo, newBalance, `refund:${orderId}`, JSON.stringify({ reason: "vtpass_failed" })]
+      );
+      await client.query("UPDATE orders SET status = 'failed', vtpass_response = $1 WHERE id = $2", [
+        JSON.stringify(result),
+        orderId,
+      ]);
     });
-    refundTx();
   } else {
-    db.prepare("UPDATE orders SET vtpass_response = ? WHERE id = ?").run(JSON.stringify(result), orderId);
+    await pool.query("UPDATE orders SET vtpass_response = $1 WHERE id = $2", [JSON.stringify(result), orderId]);
   }
 
-  const finalUser = db.prepare("SELECT wallet_balance FROM users WHERE id = ?").get(req.userId);
+  const finalUserRes = await pool.query("SELECT wallet_balance FROM users WHERE id = $1", [req.userId]);
   res.json({
     order_id: orderId,
     status: succeeded ? "success" : failed ? "failed" : "pending",
-    wallet_balance: finalUser.wallet_balance,
+    wallet_balance: finalUserRes.rows[0].wallet_balance,
     vtpass_message: result.response_description,
   });
 });
 
 router.post("/resolve-pending", requireAuth, async (req, res) => {
-  const pending = db
-    .prepare("SELECT * FROM orders WHERE user_id = ? AND status = 'pending'")
-    .all(req.userId);
+  const pendingRes = await pool.query("SELECT * FROM orders WHERE user_id = $1 AND status = 'pending'", [
+    req.userId,
+  ]);
+  const pending = pendingRes.rows;
 
   const resolved = [];
   for (const order of pending) {
     const result = await vtpass.requeryTransaction(order.vtpass_request_id);
     const status = result?.content?.transactions?.status;
     if (status === "delivered") {
-      db.prepare("UPDATE orders SET status = 'success', vtpass_response = ? WHERE id = ?")
-        .run(JSON.stringify(result), order.id);
+      await pool.query("UPDATE orders SET status = 'success', vtpass_response = $1 WHERE id = $2", [
+        JSON.stringify(result),
+        order.id,
+      ]);
       resolved.push({ order_id: order.id, status: "success" });
     } else if (status === "failed" || status === "reversed") {
-      const refundTx = db.transaction(() => {
-        const u = db.prepare("SELECT wallet_balance FROM users WHERE id = ?").get(order.user_id);
-        const newBalance = u.wallet_balance + order.sale_price;
-        db.prepare("UPDATE users SET wallet_balance = ? WHERE id = ?").run(newBalance, order.user_id);
-        db.prepare(
+      await withTransaction(async (client) => {
+        const uRes = await client.query("SELECT wallet_balance FROM users WHERE id = $1", [order.user_id]);
+        const newBalance = uRes.rows[0].wallet_balance + order.sale_price;
+        await client.query("UPDATE users SET wallet_balance = $1 WHERE id = $2", [newBalance, order.user_id]);
+        await client.query(
           `INSERT INTO wallet_ledger (id, user_id, type, amount, balance_after, reference, meta)
-           VALUES (?, ?, 'refund', ?, ?, ?, ?)`
-        ).run(uuid(), order.user_id, order.sale_price, newBalance, `refund:${order.id}`, JSON.stringify({ reason: status }));
-        db.prepare("UPDATE orders SET status = 'failed', vtpass_response = ? WHERE id = ?")
-          .run(JSON.stringify(result), order.id);
+           VALUES ($1, $2, 'refund', $3, $4, $5, $6)`,
+          [uuid(), order.user_id, order.sale_price, newBalance, `refund:${order.id}`, JSON.stringify({ reason: status })]
+        );
+        await client.query("UPDATE orders SET status = 'failed', vtpass_response = $1 WHERE id = $2", [
+          JSON.stringify(result),
+          order.id,
+        ]);
       });
-      refundTx();
       resolved.push({ order_id: order.id, status: "failed" });
     }
   }
   res.json({ resolved });
 });
 
-router.get("/orders", requireAuth, (req, res) => {
-  const orders = db
-    .prepare("SELECT * FROM orders WHERE user_id = ? ORDER BY created_at DESC LIMIT 50")
-    .all(req.userId);
-  res.json({ orders });
+router.get("/orders", requireAuth, async (req, res) => {
+  const ordersRes = await pool.query(
+    "SELECT * FROM orders WHERE user_id = $1 ORDER BY created_at DESC LIMIT 50",
+    [req.userId]
+  );
+  res.json({ orders: ordersRes.rows });
 });
 
 module.exports = router;

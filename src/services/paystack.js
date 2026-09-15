@@ -44,4 +44,54 @@ function verifyWebhookSignature(rawBody, signatureHeader) {
   return hash === signatureHeader;
 }
 
-module.exports = { initializeTransaction, verifyTransaction, verifyWebhookSignature };
+
+// Step 1 of getting a dedicated account: register the user as a Paystack
+// Customer. Returns a customer_code we need for the next step.
+async function createCustomer({ email, firstName, lastName, phone }) {
+  const res = await fetch(`${BASE}/customer`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${process.env.PAYSTACK_SECRET_KEY}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      email,
+      first_name: firstName,
+      last_name: lastName,
+      phone,
+    }),
+  });
+  const data = await res.json();
+  if (!data.status) throw new Error(data.message || "Paystack customer creation failed");
+  return data.data; // includes customer_code
+}
+
+// Step 2: request a Dedicated Virtual Account for that customer. This call
+// itself doesn't return finished account details — the actual account
+// number arrives moments later via Paystack's webhook (event:
+// "dedicatedaccount.assign.success"), since bank account provisioning is
+// asynchronous on their end.
+async function createDedicatedAccount({ customerCode, preferredBank = "wema-bank" }) {
+  const res = await fetch(`${BASE}/dedicated_account`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${process.env.PAYSTACK_SECRET_KEY}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      customer: customerCode,
+      preferred_bank: preferredBank,
+    }),
+  });
+  const data = await res.json();
+  if (!data.status) throw new Error(data.message || "Dedicated account request failed");
+  return data.data;
+}
+
+module.exports = {
+  initializeTransaction,
+  verifyTransaction,
+  verifyWebhookSignature,
+  createCustomer,
+  createDedicatedAccount,
+};

@@ -77,6 +77,23 @@ router.post("/webhook/paystack", async (req, res) => {
   }
 
   const event = JSON.parse(req.body.toString());
+
+  // Fires once Paystack finishes provisioning a dedicated account — this is
+  // where the real account number actually becomes available.
+  if (event.event === "dedicatedaccount.assign.success") {
+    const { customer, dedicated_account } = event.data;
+    await pool.query(
+      `UPDATE users SET dedicated_account_number = $1, dedicated_account_bank = $2, dedicated_account_name = $3
+       WHERE paystack_customer_code = $4`,
+      [
+        dedicated_account.account_number,
+        dedicated_account.bank.name,
+        dedicated_account.account_name,
+        customer.customer_code,
+      ]
+    );
+  }
+
   if (event.event === "charge.success") {
     const { reference, amount, customer } = event.data;
     const paymentRes = await pool.query("SELECT user_id FROM payments WHERE reference = $1", [reference]);
@@ -95,7 +112,56 @@ router.post("/webhook/paystack", async (req, res) => {
   res.sendStatus(200);
 });
 
-router.get("/balance", requireAuth, async (req, res) => {
+// Call this once, right after signup (or whenever a user wants their
+// permanent funding account). Kicks off the two-step Paystack process —
+// the actual account number arrives later via webhook, not in this response.
+router.post("/dedicated-account/request", requireAuth, async (req, res) => {
+  const userRes = await pool.query("SELECT * FROM users WHERE id = $1", [req.userId]);
+  const user = userRes.rows[0];
+
+  if (user.dedicated_account_number) {
+    return res.json({
+      already_exists: true,
+      account_number: user.dedicated_account_number,
+      bank: user.dedicated_account_bank,
+      account_name: user.dedicated_account_name,
+    });
+  }
+
+  try {
+    let customerCode = user.paystack_customer_code;
+    if (!customerCode) {
+      const [firstName, ...rest] = user.full_name.split(" ");
+      const customer = await paystack.createCustomer({
+        email: user.email,
+        firstName: firstName || user.full_name,
+        lastName: rest.join(" ") || "Customer",
+        phone: user.phone,
+      });
+      customerCode = customer.customer_code;
+      await pool.query("UPDATE users SET paystack_customer_code = $1 WHERE id = $2", [customerCode, req.userId]);
+    }
+
+    await paystack.createDedicatedAccount({ customerCode, preferredBank: "wema-bank" });
+    res.json({ requested: true, message: "Account is being created — check back shortly" });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Lets the frontend poll until the webhook below has filled in the account details.
+router.get("/dedicated-account", requireAuth, async (req, res) => {
+  const userRes = await pool.query(
+    "SELECT dedicated_account_number, dedicated_account_bank, dedicated_account_name FROM users WHERE id = $1",
+    [req.userId]
+  );
+  const user = userRes.rows[0];
+  res.json({
+    account_number: user.dedicated_account_number,
+    bank: user.dedicated_account_bank,
+    account_name: user.dedicated_account_name,
+  });
+});
   const userRes = await pool.query("SELECT wallet_balance FROM users WHERE id = $1", [req.userId]);
   res.json({ wallet_balance: userRes.rows[0].wallet_balance });
 });

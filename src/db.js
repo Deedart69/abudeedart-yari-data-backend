@@ -48,7 +48,17 @@ async function initSchema() {
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
 
-    CREATE TABLE IF NOT EXISTS payments (
+   `);
+
+  // Migration for accounts created before this feature existed — safe to
+  // run every startup, since IF NOT EXISTS makes it a no-op once applied.
+  await pool.query(`
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS dedicated_account_number TEXT;
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS dedicated_account_bank TEXT;
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS dedicated_account_name TEXT;
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS paystack_customer_code TEXT;
+  `);
+} (
       id TEXT PRIMARY KEY,
       user_id TEXT NOT NULL REFERENCES users(id),
       reference TEXT UNIQUE NOT NULL,

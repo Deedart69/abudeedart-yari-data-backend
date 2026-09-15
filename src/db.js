@@ -27,13 +27,13 @@ async function initSchema() {
       user_id TEXT NOT NULL REFERENCES users(id),
       type TEXT NOT NULL,
       amount INTEGER NOT NULL,
-      balance_after INTEGER NOT NULL,
-      reference TEXT UNIQUE NOT NULL,
-      meta TEXT,
+    wallet_balance INTEGER NOT NULL DEFAULT 0,
+      dedicated_account_number TEXT,
+      dedicated_account_bank TEXT,
+      dedicated_account_name TEXT,
+      paystack_customer_code TEXT,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    );
-
-    CREATE TABLE IF NOT EXISTS orders (
+    );  REATE TATE TL   CREATE TABLE IF NOT EXISTS orders (
       id TEXT PRIMARY KEY,
       user_id TEXT NOT NULL REFERENCES users(id),
       network TEXT NOT NULL,

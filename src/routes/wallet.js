@@ -150,6 +150,7 @@ router.post("/dedicated-account/request", requireAuth, async (req, res) => {
 });
 
 // Lets the frontend poll until the webhook below has filled in the account details.
+
 router.get("/dedicated-account", requireAuth, async (req, res) => {
   const userRes = await pool.query(
     "SELECT dedicated_account_number, dedicated_account_bank, dedicated_account_name FROM users WHERE id = $1",
@@ -162,6 +163,8 @@ router.get("/dedicated-account", requireAuth, async (req, res) => {
     account_name: user.dedicated_account_name,
   });
 });
+
+router.get("/balance", requireAuth, async (req, res) => {
   const userRes = await pool.query("SELECT wallet_balance FROM users WHERE id = $1", [req.userId]);
   res.json({ wallet_balance: userRes.rows[0].wallet_balance });
 });

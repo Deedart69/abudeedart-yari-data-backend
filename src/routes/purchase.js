@@ -23,7 +23,7 @@ router.get("/categories/:network", requireAuth, (req, res) => {
 
 router.get("/plans/:network", requireAuth, async (req, res) => {
   const { network } = req.params;
-  const category = req.query.category || "gifting";
+  const category = req.query.category || "sme";
 
   const serviceID = vtpass.getServiceId(network, category);
   if (!serviceID) {
@@ -41,7 +41,7 @@ router.get("/plans/:network", requireAuth, async (req, res) => {
 });
 
 router.post("/data", requireAuth, async (req, res) => {
-  const { network, phone, planCode, category = "gifting" } = req.body;
+ const { network, phone, planCode, category = "sme" } = req.body; 
   if (!network || !phone || !planCode) {
     return res.status(400).json({ error: "network, phone, and planCode are required" });
   }

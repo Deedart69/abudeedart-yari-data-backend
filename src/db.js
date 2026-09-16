@@ -27,13 +27,13 @@ async function initSchema() {
       user_id TEXT NOT NULL REFERENCES users(id),
       type TEXT NOT NULL,
       amount INTEGER NOT NULL,
-    wallet_balance INTEGER NOT NULL DEFAULT 0,
-      dedicated_account_number TEXT,
-      dedicated_account_bank TEXT,
-      dedicated_account_name TEXT,
-      paystack_customer_code TEXT,
+      balance_after INTEGER NOT NULL,
+      reference TEXT UNIQUE NOT NULL,
+      meta TEXT,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    );  REATE TATE TL   CREATE TABLE IF NOT EXISTS orders (
+    );
+
+    CREATE TABLE IF NOT EXISTS orders (
       id TEXT PRIMARY KEY,
       user_id TEXT NOT NULL REFERENCES users(id),
       network TEXT NOT NULL,
@@ -48,7 +48,15 @@ async function initSchema() {
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
 
-   `);
+    CREATE TABLE IF NOT EXISTS payments (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL REFERENCES users(id),
+      reference TEXT UNIQUE NOT NULL,
+      amount INTEGER NOT NULL,
+      status TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+  `);
 
   // Migration for accounts created before this feature existed — safe to
   // run every startup, since IF NOT EXISTS makes it a no-op once applied.
@@ -57,15 +65,6 @@ async function initSchema() {
     ALTER TABLE users ADD COLUMN IF NOT EXISTS dedicated_account_bank TEXT;
     ALTER TABLE users ADD COLUMN IF NOT EXISTS dedicated_account_name TEXT;
     ALTER TABLE users ADD COLUMN IF NOT EXISTS paystack_customer_code TEXT;
-  `);
-} (
-      id TEXT PRIMARY KEY,
-      user_id TEXT NOT NULL REFERENCES users(id),
-      reference TEXT UNIQUE NOT NULL,
-      amount INTEGER NOT NULL,
-      status TEXT NOT NULL,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    );
   `);
 }
 

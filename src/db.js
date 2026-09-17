@@ -56,6 +56,27 @@ async function initSchema() {
       status TEXT NOT NULL,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
+
+    -- Your own catalog of data plans. Supplier price comes from VTpass and
+    -- is refreshed by the admin "sync" action; selling_price is set by you
+    -- and is the ONLY price ever shown to customers. Prices are stored in
+    -- kobo (NGN * 100) to avoid floating-point rounding issues.
+    CREATE TABLE IF NOT EXISTS data_plans (
+      id TEXT PRIMARY KEY,
+      network TEXT NOT NULL,
+      category TEXT NOT NULL,
+      label TEXT NOT NULL,
+      data_volume TEXT,
+      validity TEXT,
+      vtpass_service_id TEXT NOT NULL,
+      vtpass_variation_code TEXT NOT NULL,
+      supplier_price INTEGER NOT NULL,
+      selling_price INTEGER NOT NULL,
+      active BOOLEAN NOT NULL DEFAULT true,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE (vtpass_service_id, vtpass_variation_code)
+    );
   `);
 
   // Migration for accounts created before this feature existed — safe to

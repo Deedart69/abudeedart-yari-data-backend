@@ -112,7 +112,20 @@ async function requeryTransaction(requestId) {
   return res.json();
 }
 
+// Same as getDataVariations, but returns the raw VTpass objects untouched
+// (name, variation_code, variation_amount) — used only by the admin sync
+// job, which needs the real supplier price. Customer-facing code never
+// calls this directly.
+async function fetchRawVariations(serviceID) {
+  const res = await fetch(`${BASE}/service-variations?serviceID=${serviceID}`, {
+    headers: { "api-key": process.env.VTPASS_PUBLIC_KEY },
+  });
+  const data = await res.json();
+  return data?.content?.variations || data?.content?.varations || [];
+}
+
 module.exports = {
+  fetchRawVariations,
   getDataVariations,
   buyData,
   buyAirtime,

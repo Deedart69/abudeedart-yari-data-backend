@@ -103,7 +103,23 @@ async function buyAirtime({ requestId, network, phone, amountNaira }) {
 
 // VTpass responses use code "000" for success. Some failures only show up
 // when you re-query, so always check requery for anything not immediately "000".
-async function requeryTransaction(requestId) {
+// Pays using an exact serviceID + variation_code pulled from YOUR data_plans
+// table — bypasses the network/category guessing entirely, so what gets
+// billed always matches exactly what you priced and stored.
+async function payExact({ requestId, serviceID, variationCode, phone }) {
+  const res = await fetch(`${BASE}/pay`, {
+    method: "POST",
+    headers: authHeaders(),
+    body: JSON.stringify({
+      request_id: requestId,
+      serviceID,
+      billersCode: phone,
+      variation_code: variationCode,
+      phone,
+    }),
+  });
+  return res.json();
+}
   const res = await fetch(`${BASE}/requery`, {
     method: "POST",
     headers: authHeaders(),

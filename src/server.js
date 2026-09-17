@@ -19,8 +19,9 @@ app.use(express.json());
 
 app.use("/api/auth", authRoutes);
 app.use("/api/wallet", walletRoutes);
-app.use("/api/purchase", purchaseRoutes);
 
+app.use("/api/admin", require("./routes/admin"));
+app.use("/api/admin", require("./routes/admin"));
 app.get("/health", (req, res) => res.json({ ok: true }));
 
 const PORT = process.env.PORT || 4000;

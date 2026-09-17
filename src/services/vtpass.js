@@ -140,11 +140,13 @@ async function fetchRawVariations(serviceID) {
   return data?.content?.variations || data?.content?.varations || [];
 }
 
+
 module.exports = {
   fetchRawVariations,
   getDataVariations,
   buyData,
   buyAirtime,
+  payExact,
   requeryTransaction,
   getServiceId,
   SERVICE_IDS,

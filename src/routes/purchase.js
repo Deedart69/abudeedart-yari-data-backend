@@ -5,7 +5,6 @@ const { requireAuth } = require("../middleware/auth");
 const vtpass = require("../services/vtpass");
 
 const router = express.Router();
-const MARKUP = parseFloat(process.env.MARKUP_PERCENT || "0.05");
 
 router.get("/categories/:network", requireAuth, (req, res) => {
   const { network } = req.params;
@@ -23,35 +22,40 @@ router.get("/categories/:network", requireAuth, (req, res) => {
 
 router.get("/plans/:network", requireAuth, async (req, res) => {
   const { network } = req.params;
-  const category = req.query.category || "sme";
+  const category = req.query.category || "gifting";
+  const lookupCategory = category === "cg" ? "sme" : category;
 
-  const serviceID = vtpass.getServiceId(network, category);
-  if (!serviceID) {
+  const result = await pool.query(
+    "SELECT id, label, data_volume, validity, selling_price FROM data_plans WHERE network = $1 AND category = $2 AND active = true ORDER BY selling_price",
+    [network, lookupCategory]
+  );
+
+  if (result.rows.length === 0) {
     return res.json({ network, category, plans: [], available: false });
   }
 
-  const variations = await vtpass.getDataVariations(network, category);
-  const plans = variations.map((v) => ({
-    code: v.variation_code,
-    label: v.name,
-    cost_naira: parseFloat(v.variation_amount),
-    sale_naira: Math.ceil(parseFloat(v.variation_amount) * (1 + MARKUP)),
+  const plans = result.rows.map((p) => ({
+    id: p.id,
+    label: p.label,
+    data_volume: p.data_volume,
+    validity: p.validity,
+    sale_naira: p.selling_price / 100,
   }));
   res.json({ network, category, plans, available: true });
 });
 
 router.post("/data", requireAuth, async (req, res) => {
- const { network, phone, planCode, category = "sme" } = req.body; 
-  if (!network || !phone || !planCode) {
-    return res.status(400).json({ error: "network, phone, and planCode are required" });
+  const { planId, phone } = req.body;
+  if (!planId || !phone) {
+    return res.status(400).json({ error: "planId and phone are required" });
   }
 
-  const variations = await vtpass.getDataVariations(network, category);
-  const plan = variations.find((v) => v.variation_code === planCode);
-  if (!plan) return res.status(400).json({ error: "Plan not found — prices may have changed, refetch /plans" });
+  const planRes = await pool.query("SELECT * FROM data_plans WHERE id = $1 AND active = true", [planId]);
+  const plan = planRes.rows[0];
+  if (!plan) return res.status(400).json({ error: "Plan not found or no longer available" });
 
-  const costKobo = Math.round(parseFloat(plan.variation_amount) * 100);
-  const saleKobo = Math.ceil(costKobo * (1 + MARKUP));
+  const saleKobo = plan.selling_price;
+  const costKobo = plan.supplier_price;
 
   const userRes = await pool.query("SELECT wallet_balance FROM users WHERE id = $1", [req.userId]);
   const user = userRes.rows[0];
@@ -68,18 +72,23 @@ router.post("/data", requireAuth, async (req, res) => {
     await client.query(
       `INSERT INTO wallet_ledger (id, user_id, type, amount, balance_after, reference, meta)
        VALUES ($1, $2, 'purchase', $3, $4, $5, $6)`,
-      [uuid(), req.userId, -saleKobo, newBalance, orderId, JSON.stringify({ network, phone, category })]
+      [uuid(), req.userId, -saleKobo, newBalance, orderId, JSON.stringify({ network: plan.network, phone, planId })]
     );
     await client.query(
       `INSERT INTO orders (id, user_id, network, phone, plan_code, plan_label, cost_price, sale_price, status, vtpass_request_id)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'pending', $9)`,
-      [orderId, req.userId, network, phone, planCode, plan.name, costKobo, saleKobo, requestId]
+      [orderId, req.userId, plan.network, phone, plan.vtpass_variation_code, plan.label, costKobo, saleKobo, requestId]
     );
   });
 
   let result;
   try {
-    result = await vtpass.buyData({ requestId, network, category, phone, variationCode: planCode });
+    result = await vtpass.payExact({
+      requestId,
+      serviceID: plan.vtpass_service_id,
+      variationCode: plan.vtpass_variation_code,
+      phone,
+    });
   } catch (err) {
     result = { code: "network_error", response_description: err.message };
   }
@@ -126,6 +135,7 @@ router.post("/airtime", requireAuth, async (req, res) => {
     return res.status(400).json({ error: "network, phone, and a minimum ₦50 amount are required" });
   }
 
+  const MARKUP = parseFloat(process.env.MARKUP_PERCENT || "0.02");
   const costKobo = Math.round(amountNaira * 100);
   const saleKobo = Math.ceil(costKobo * (1 + MARKUP));
 

@@ -3,7 +3,7 @@ const { v4: uuid } = require("uuid");
 const { pool, withTransaction } = require("../db");
 const { requireAuth } = require("../middleware/auth");
 const vtpass = require("../services/vtpass");
-
+const harisdata = require("../services/harisdata");
 const router = express.Router();
 
 router.get("/categories/:network", requireAuth, (req, res) => {
@@ -81,20 +81,39 @@ router.post("/data", requireAuth, async (req, res) => {
     );
   });
 
+  // Different suppliers, different response shapes — normalize both into
+  // the same succeeded/failed booleans so the rest of this route doesn't
+  // need to know which provider fulfilled the order.
   let result;
-  try {
-    result = await vtpass.payExact({
-      requestId,
-      serviceID: plan.vtpass_service_id,
-      variationCode: plan.vtpass_variation_code,
-      phone,
-    });
-  } catch (err) {
-    result = { code: "network_error", response_description: err.message };
-  }
+  let succeeded = false;
+  let failed = false;
 
-  const succeeded = result.code === "000" && result?.content?.transactions?.status === "delivered";
-  const failed = result.code !== "000" && result.code !== "099";
+  if (plan.vtpass_service_id === "harisdata") {
+    try {
+      result = await harisdata.buyData({
+        network: plan.network,
+        phone,
+        planId: plan.vtpass_variation_code,
+      });
+    } catch (err) {
+      result = { status: "error", msg: err.message };
+    }
+    succeeded = result.status === "success";
+    failed = !succeeded;
+  } else {
+    try {
+      result = await vtpass.payExact({
+        requestId,
+        serviceID: plan.vtpass_service_id,
+        variationCode: plan.vtpass_variation_code,
+        phone,
+      });
+    } catch (err) {
+      result = { code: "network_error", response_description: err.message };
+    }
+    succeeded = result.code === "000" && result?.content?.transactions?.status === "delivered";
+    failed = result.code !== "000" && result.code !== "099";
+  }
 
   if (succeeded) {
     await pool.query("UPDATE orders SET status = 'success', vtpass_response = $1 WHERE id = $2", [
@@ -125,7 +144,7 @@ router.post("/data", requireAuth, async (req, res) => {
     order_id: orderId,
     status: succeeded ? "success" : failed ? "failed" : "pending",
     wallet_balance: finalUserRes.rows[0].wallet_balance,
-    vtpass_message: result.response_description,
+    vtpass_message: result.response_description || result.msg,
   });
 });
 

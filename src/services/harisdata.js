@@ -20,9 +20,12 @@ const NETWORK_IDS = {
 // Fetches the live plan list, priced for your account tier. Returns Haris
 // Data's raw plan objects (PlanId, PlanName, price, Type, Validity, etc.)
 // so the admin sync can decide how to store/categorize them.
+
 async function fetchDataPlans() {
   const res = await fetch(`${BASE}/api/data/data_plan.php`, {
+    method: "POST",
     headers: authHeaders(),
+    body: JSON.stringify({}),
   });
   const data = await res.json();
   if (data.success !== "1" && data.status !== "success") {
@@ -30,7 +33,6 @@ async function fetchDataPlans() {
   }
   return data.plans || [];
 }
-
 // Buys a data plan using Haris Data's numeric plan ID (stored as
 // vtpass_variation_code in your data_plans table for this provider, for
 // simplicity — despite the column name, it just holds "the code the

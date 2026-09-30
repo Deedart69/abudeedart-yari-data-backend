@@ -81,16 +81,8 @@ router.post("/plans/sync-harisdata", requireAdmin, async (req, res) => {
     return res.status(502).json({ error: err.message });
   }
 
-  // Map Haris Data's network names to your app's lowercase network keys
-  const networkMap = { MTN: "mtn", GLO: "glo", "9MOBILE": "9mobile", AIRTEL: "airtel" };
-
   for (const p of plans) {
-    const network = networkMap[String(p.NetworkId || p.network || "").toUpperCase()] ||
-      (p.PlanName || "").toLowerCase().includes("mtn") ? "mtn" :
-      (p.PlanName || "").toLowerCase().includes("glo") ? "glo" :
-      (p.PlanName || "").toLowerCase().includes("9mobile") ? "9mobile" :
-      (p.PlanName || "").toLowerCase().includes("airtel") ? "airtel" : null;
-
+    const network = p._networkName || null;
     if (!network) continue;
 
     // Haris Data's "Type" field (mtnsme, mtngifting, mtncg, direct) becomes

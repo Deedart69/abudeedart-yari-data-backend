@@ -20,28 +20,34 @@ const NETWORK_IDS = {
 // Fetches the live plan list, priced for your account tier. Returns Haris
 // Data's raw plan objects (PlanId, PlanName, price, Type, Validity, etc.)
 // so the admin sync can decide how to store/categorize them.
-async function fetchDataPlans() {
-  const res = await fetch(`${BASE}/api/data/data_plan.php`, {
-    method: "POST",
-    headers: authHeaders(),
-    body: JSON.stringify({}),
-  });
-  const rawText = await res.text();
-  let data;
-  try {
-    data = JSON.parse(rawText);
-  } catch {
-    // TEMPORARY: surfaces the raw response so we can see exactly what
-    // Haris Data sent back (e.g. an HTML error page instead of JSON).
-    throw new Error(`Non-JSON response (HTTP ${res.status}): ${rawText.slice(0, 300)}`);
-  }
-  if (data.success !== "1" && data.status !== "success") {
-    // TEMPORARY: include the full response for debugging the auth issue.
-    throw new Error(`HTTP ${res.status}: ${JSON.stringify(data)}`);
-  }
-  return data.plans || [];
-}
 
+// Haris Data's plan-listing endpoint wants a specific network per request
+// (confirmed by their own "Network Id Required" error), so we call it once
+// per network and merge the results.
+async function fetchDataPlans() {
+  const allPlans = [];
+  for (const [networkName, networkId] of Object.entries(NETWORK_IDS)) {
+    const res = await fetch(`${BASE}/api/data/data_plan.php`, {
+      method: "POST",
+      headers: authHeaders(),
+      body: JSON.stringify({ NetworkId: networkId }),
+    });
+    const rawText = await res.text();
+    let data;
+    try {
+      data = JSON.parse(rawText);
+    } catch {
+      throw new Error(`Non-JSON response for ${networkName} (HTTP ${res.status}): ${rawText.slice(0, 300)}`);
+    }
+    if (data.success !== "1" && data.status !== "success") {
+      throw new Error(`${networkName}: ${JSON.stringify(data)}`);
+    }
+    for (const plan of data.plans || []) {
+      allPlans.push({ ...plan, _networkName: networkName });
+    }
+  }
+  return allPlans;
+}
 // Buys a data plan using Haris Data's numeric plan ID (stored as
 // vtpass_variation_code in your data_plans table for this provider, for
 // simplicity — despite the column name, it just holds "the code the

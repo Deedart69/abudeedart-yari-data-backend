@@ -15,7 +15,12 @@ app.use(cors());
 // body-parser then skips re-parsing a request it's already handled, so the
 // route below still gets the untouched Buffer it needs.
 app.use("/api/wallet/webhook/paystack", express.raw({ type: "application/json" }));
-app.use(express.json());
+// TEMPORARY: logs every incoming request so we can see exactly what the
+// frontend is actually calling, and with what parameters.
+app.use((req, res, next) => {
+  console.log(`[REQUEST] ${req.method} ${req.originalUrl}`);
+  next();
+});
 
 app.use("/api/auth", authRoutes);
 app.use("/api/wallet", walletRoutes);

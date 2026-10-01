@@ -25,7 +25,6 @@ router.get("/plans/:network", requireAuth, async (req, res) => {
   const category = req.query.category || "gifting";
   const lookupCategory = category === "cg" ? "sme" : category;
 
-  // TEMPORARY: debug logging to see exactly what's being queried and found
   console.log(`[PLANS QUERY] network=${JSON.stringify(network)} lookupCategory=${JSON.stringify(lookupCategory)}`);
 
   const result = await pool.query(

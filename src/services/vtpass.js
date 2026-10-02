@@ -17,7 +17,7 @@ const AIRTIME_SERVICE_IDS = {
 };
 
 const AVAILABLE_CATEGORIES = {
-  mtn: ["gifting"],
+  mtn: ["gifting", "sme"],
   airtel: ["gifting"],
   glo: ["gifting", "sme"],
   "9mobile": ["gifting", "sme"],

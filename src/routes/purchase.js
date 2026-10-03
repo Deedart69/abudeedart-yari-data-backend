@@ -203,7 +203,8 @@ let result;
 
   const succeeded = result.code === "000" && result?.content?.transactions?.status === "delivered";
   const failed = result.code !== "000" && result.code !== "099";  
-
+}
+  console.log(`[AIRTIME RESULT]`, JSON.stringify(result));          
   if (succeeded) {
     await pool.query("UPDATE orders SET status = 'success', vtpass_response = $1 WHERE id = $2", [
       JSON.stringify(result),

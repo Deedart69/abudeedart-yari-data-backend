@@ -25,20 +25,10 @@ router.get("/plans/:network", requireAuth, async (req, res) => {
   const category = req.query.category || "gifting";
   const lookupCategory = category === "cg" ? "sme" : category;
 
-  console.log(`[PLANS QUERY] network=${JSON.stringify(network)} lookupCategory=${JSON.stringify(lookupCategory)}`);
-
   const result = await pool.query(
     "SELECT id, label, data_volume, validity, selling_price FROM data_plans WHERE network = $1 AND category = $2 AND active = true ORDER BY selling_price",
     [network, lookupCategory]
   );
-
-  console.log(`[PLANS QUERY] found ${result.rows.length} rows`);
-
-  const anyForNetwork = await pool.query(
-    "SELECT DISTINCT category, active FROM data_plans WHERE network = $1",
-    [network]
-  );
-  console.log(`[PLANS QUERY] distinct category/active combos for this network:`, JSON.stringify(anyForNetwork.rows));
 
   if (result.rows.length === 0) {
     return res.json({ network, category, plans: [], available: false });
@@ -91,9 +81,6 @@ router.post("/data", requireAuth, async (req, res) => {
     );
   });
 
-  // Different suppliers, different response shapes — normalize both into
-  // the same succeeded/failed booleans so the rest of this route doesn't
-  // need to know which provider fulfilled the order.
   let result;
   let succeeded = false;
   let failed = false;
@@ -192,7 +179,7 @@ router.post("/airtime", requireAuth, async (req, res) => {
     );
   });
 
-let result;
+  let result;
   try {
     result = await vtpass.buyAirtime({ requestId, network, phone, amountNaira });
   } catch (err) {
@@ -202,9 +189,8 @@ let result;
   console.log(`[AIRTIME RESULT]`, JSON.stringify(result));
 
   const succeeded = result.code === "000" && result?.content?.transactions?.status === "delivered";
-  const failed = result.code !== "000" && result.code !== "099";  
-}
-  console.log(`[AIRTIME RESULT]`, JSON.stringify(result));          
+  const failed = result.code !== "000" && result.code !== "099";
+
   if (succeeded) {
     await pool.query("UPDATE orders SET status = 'success', vtpass_response = $1 WHERE id = $2", [
       JSON.stringify(result),

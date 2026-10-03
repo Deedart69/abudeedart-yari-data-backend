@@ -200,5 +200,13 @@ router.patch("/plans/:id", requireAdmin, async (req, res) => {
 
   res.json({ ok: true });
 });
-
+// One-click way to hide every VTpass-sourced plan at once, keeping only
+// Haris Data plans visible to customers — without deleting anything, so
+// you can always flip VTpass plans back on later if needed.
+router.post("/plans/deactivate-vtpass", requireAdmin, async (req, res) => {
+  const result = await pool.query(
+    "UPDATE data_plans SET active = false, updated_at = NOW() WHERE vtpass_service_id != 'harisdata' RETURNING id"
+  );
+  res.json({ deactivated: result.rows.length });
+});
 module.exports = router;

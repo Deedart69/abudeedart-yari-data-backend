@@ -192,15 +192,17 @@ router.post("/airtime", requireAuth, async (req, res) => {
     );
   });
 
-  let result;
+let result;
   try {
     result = await vtpass.buyAirtime({ requestId, network, phone, amountNaira });
   } catch (err) {
     result = { code: "network_error", response_description: err.message };
   }
 
+  console.log(`[AIRTIME RESULT]`, JSON.stringify(result));
+
   const succeeded = result.code === "000" && result?.content?.transactions?.status === "delivered";
-  const failed = result.code !== "000" && result.code !== "099";
+  const failed = result.code !== "000" && result.code !== "099";  
 
   if (succeeded) {
     await pool.query("UPDATE orders SET status = 'success', vtpass_response = $1 WHERE id = $2", [

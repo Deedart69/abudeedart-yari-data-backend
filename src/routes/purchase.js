@@ -80,37 +80,21 @@ router.post("/data", requireAuth, async (req, res) => {
       [orderId, req.userId, plan.network, phone, plan.vtpass_variation_code, plan.label, costKobo, saleKobo, requestId]
     );
   });
-
+// All purchases now go through Haris Data only — VTpass is kept only
+  // for its category labels (gifting/sme/etc), never called for delivery.
   let result;
-  let succeeded = false;
-  let failed = false;
-
-  if (plan.vtpass_service_id === "harisdata") {
-    try {
-      result = await harisdata.buyData({
-        network: plan.network,
-        phone,
-        planId: plan.vtpass_variation_code,
-      });
-    } catch (err) {
-      result = { status: "error", msg: err.message };
-    }
-    succeeded = result.status === "success";
-    failed = !succeeded;
-  } else {
-    try {
-      result = await vtpass.payExact({
-        requestId,
-        serviceID: plan.vtpass_service_id,
-        variationCode: plan.vtpass_variation_code,
-        phone,
-      });
-    } catch (err) {
-      result = { code: "network_error", response_description: err.message };
-    }
-    succeeded = result.code === "000" && result?.content?.transactions?.status === "delivered";
-    failed = result.code !== "000" && result.code !== "099";
+  try {
+    result = await harisdata.buyData({
+      network: plan.network,
+      phone,
+      planId: plan.vtpass_variation_code,
+    });
+  } catch (err) {
+    result = { status: "error", msg: err.message };
   }
+  const succeeded = result.status === "success";
+  const failed = !succeeded;
+  
 
   if (succeeded) {
     await pool.query("UPDATE orders SET status = 'success', vtpass_response = $1 WHERE id = $2", [

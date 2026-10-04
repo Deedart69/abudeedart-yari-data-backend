@@ -66,4 +66,19 @@ async function buyData({ network, phone, planId }) {
   return res.json();
 }
 
-module.exports = { fetchDataPlans, buyData, NETWORK_IDS };
+
+async function buyAirtime({ network, phone, amountNaira }) {
+  const networkId = NETWORK_IDS[network];
+  const res = await fetch(`${BASE}/api/airtime/`, {
+    method: "POST",
+    headers: authHeaders(),
+    body: JSON.stringify({
+      network: networkId,
+      phone,
+      amount: amountNaira,
+    }),
+  });
+  return res.json();
+}
+
+module.exports = { fetchDataPlans, buyData, buyAirtime, NETWORK_IDS };

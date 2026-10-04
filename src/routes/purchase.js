@@ -204,7 +204,7 @@ router.post("/airtime", requireAuth, async (req, res) => {
     order_id: orderId,
     status: succeeded ? "success" : failed ? "failed" : "pending",
     wallet_balance: finalUserRes.rows[0].wallet_balance,
-    vtpass_message: result.response_description,
+    vtpass_message: result.response_description || result.msg,
   });
 });
 
